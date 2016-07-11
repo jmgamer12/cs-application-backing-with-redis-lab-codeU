@@ -67,8 +67,8 @@ public class JedisIndex {
 	 * @return Set of URLs.
 	 */
 	public Set<String> getURLs(String term) {
-        // FILL THIS IN!
-		return null;
+        Set<String> set = jedis.smembers(urlSetKey(term));
+        return set;        
 	}
 
     /**
@@ -78,8 +78,40 @@ public class JedisIndex {
 	 * @return Map from URL to count.
 	 */
 	public Map<String, Integer> getCounts(String term) {
-        // FILL THIS IN!
-		return null;
+        Map<String, Integer> map = new HashMap<String, Integer>();
+        Set<String> urls = getURLs(term);
+        for (String url: urls) {
+        	Integer count = getCount(url, term);
+        	map.put(url, count);
+        }
+        return map;
+	}
+	
+	public Map<String, Integer> getCountsFaster(String term) {
+		// convert the set of string to a list so we get the 
+		// same traversal order every time
+		List<String> urls = new ArrayList<String>();
+		urls.addAll(getURLs(term));
+		
+		// construct a transaction to perform all lookups
+		Transaction t = jedis.multi();
+		for (String url: urls) {
+			String redisKey = termCounterKey(url);
+			t.hget(redisKey, term);
+		}
+		
+		List<Object> res = t.exec();
+		
+		// iterate the results and make the map
+		Map<String, Integer> map = new HashMap<String, Integer>();
+		int i = 0;
+		for (String url: urls) {
+			System.out.println(url);
+			Integer count = new Integer((String) res.get(i++));
+			map.put(url, count);
+		}
+		
+		return map;
 	}
 
     /**
@@ -91,7 +123,9 @@ public class JedisIndex {
 	 */
 	public Integer getCount(String url, String term) {
         // FILL THIS IN!
-		return null;
+		String redisKey = termCounterKey(url);
+		String count = jedis.hget(redisKey, term);
+		return new Integer(count);
 	}
 
 
@@ -102,7 +136,40 @@ public class JedisIndex {
 	 * @param paragraphs  Collection of elements that should be indexed.
 	 */
 	public void indexPage(String url, Elements paragraphs) {
-        // FILL THIS IN!
+        System.out.println("Indexing..." + url);
+        
+        // make a TermCounter and count the terms in the paragraph
+        TermCounter tc = new TermCounter(url);
+        tc.processElements(paragraphs);
+        
+        // push contents of the TermCounter to Redis
+        pushTCtoRedis(tc);
+	}
+	
+	/*
+	 * Pushes content of the TermCounter to Redis
+	 * @return List of return values from Redis
+	 */
+	private List<Object> pushTCtoRedis(TermCounter tc) {
+		Transaction t = jedis.multi();
+		
+		String url = tc.getLabel();
+		String hashname = termCounterKey(url);
+		
+		// if this page has already been indexed; delete the old hash
+		t.del(hashname);
+		
+		
+		// for each term, add an entry in the termcounter and a new
+		// member of the index
+		for (String term: tc.keySet()) {
+			Integer count = tc.get(term);
+			t.hset(hashname, term, count.toString());
+			t.sadd(urlSetKey(term), url);
+		}
+		List<Object> res = t.exec();
+		return res;
+	
 	}
 
 	/**
@@ -228,7 +295,7 @@ public class JedisIndex {
 		//index.deleteAllKeys();
 		loadIndex(index);
 		
-		Map<String, Integer> map = index.getCounts("the");
+		Map<String, Integer> map = index.getCountsFaster("the");
 		for (Entry<String, Integer> entry: map.entrySet()) {
 			System.out.println(entry);
 		}
